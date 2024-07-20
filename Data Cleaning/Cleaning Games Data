@@ -1,0 +1,233 @@
+-- Let's clean data first
+
+-- Let's create a new table to save our raw dataset
+CREATE TABLE games_2 (
+    rank INTEGER PRIMARY KEY,
+    name CHARACTER VARYING(255),
+    platform CHARACTER VARYING(50),
+    year INTEGER,
+    genre CHARACTER VARYING(50),
+    publisher CHARACTER VARYING(100),
+    na_sales DOUBLE PRECISION,
+    eu_sales DOUBLE PRECISION,
+    jp_sales DOUBLE PRECISION,
+    other_sales DOUBLE PRECISION,
+    global_sales DOUBLE PRECISION
+);
+
+COPY games_2 (
+    rank,
+    name,
+    platform,
+    year,
+    genre,
+    publisher,
+    na_sales,
+    eu_sales,
+    jp_sales,
+    other_sales,
+    global_sales
+)
+FROM 'C:\\Users\\Administrator\\Desktop\\DATA ANALYTICS\\CSV Files\\Games_Sales.csv'
+DELIMITER ','
+CSV HEADER
+NULL 'N/A';
+
+ALTER TABLE games_2
+RENAME TO games_staging;
+
+-- Let's identify duplicates
+WITH duplicates AS (
+    SELECT *,
+    ROW_NUMBER() OVER (
+        PARTITION BY rank, name, platform, year, genre, publisher, na_sales, eu_sales, jp_sales, other_sales, global_sales
+        ORDER BY rank
+    ) AS row_num
+    FROM games_staging
+)
+SELECT *
+FROM duplicates
+WHERE row_num > 1;
+
+-- So there are no duplicates, let's proceed
+
+SELECT DISTINCT name
+FROM games_staging
+ORDER BY 1 DESC;
+
+SELECT DISTINCT platform
+FROM games_staging
+ORDER BY 1 DESC;
+
+SELECT DISTINCT year
+FROM games_staging
+ORDER BY 1 DESC;
+
+-- I saw NULL in the year column, so let's fill that later
+
+SELECT DISTINCT publisher
+FROM games_staging
+ORDER BY 1 DESC;
+
+-- There are some issues
+SELECT DISTINCT publisher
+FROM games_staging
+WHERE publisher LIKE 'Sony%';
+
+-- Let's fix the issue
+UPDATE games_staging
+SET publisher = 'Sony Computer Entertainment'
+WHERE publisher LIKE 'Sony Computer Entertainment%';
+
+-- Proceed to another column
+SELECT *
+FROM games_staging;
+
+-- There's nothing to modify
+SELECT DISTINCT name
+FROM games_staging
+WHERE name ILIKE '%WWE%';
+
+UPDATE games_staging
+SET name = 'WWE SmackDown! vs. RAW 2006'
+WHERE name ILIKE 'WWE SmackDown! vs. RAW 2006';
+
+/* There’s an issue where the column rank and total rows are not proportional.
+Where total rank is 16600 and total rows is 16598. So there is a gap between the
+rank and total rows. I think there are missing rows, so let’s check it out. */
+
+-- Create a sequence of numbers from 1 to 16600
+WITH sequence AS (
+    SELECT 
+        generate_series(1, 16600) AS rank
+)
+
+-- Find the missing ranks by left joining the sequence with the actual ranks
+SELECT 
+    sequence.rank AS rank
+FROM 
+    sequence
+LEFT JOIN 
+    games_staging ON sequence.rank = games_staging.rank
+WHERE
+    games_staging.rank IS NULL;
+
+/* So there are 2 missing rows which are row 654 and row 14200,
+let's adjust the rows according to ranks in order to match rank and total rows */
+
+UPDATE games_staging
+SET rank = rank - 1
+WHERE rank > 654;
+
+/* Since I cannot update my rank due to its primary key,
+I have to remove it first. */
+
+SELECT constraint_name
+FROM information_schema.table_constraints
+WHERE table_name = 'games_staging'
+AND constraint_type = 'PRIMARY KEY';
+
+/* Once you have the constraint name, you can drop it using: */
+
+ALTER TABLE games_staging DROP CONSTRAINT games_2_pkey;
+
+/* So let's proceed with updating after removing the primary key */
+
+UPDATE games_staging
+SET rank = rank - 1
+WHERE rank > 654;
+
+-- The row 14199 (row 14200 before updating) is still missing, let's update it
+
+UPDATE games_staging
+SET rank = rank - 1
+WHERE rank > 14199;
+
+-- Let's check if it is already proportional to the total rows
+SELECT *
+FROM games_staging
+ORDER BY 1 ASC;
+
+-- The rows and ranks are now proportional with no missing rows
+
+/* There is an issue where the ranks are not sorted from 1 to 16598,
+so I am going to sort them */
+
+-- Start a transaction
+BEGIN;
+
+-- Step 1: Add a temporary unique identifier column
+ALTER TABLE games_staging ADD COLUMN temp_id SERIAL;
+
+-- Step 2: Create a CTE to generate new sequential ranks
+WITH ranking AS (
+    SELECT 
+        temp_id,
+        ROW_NUMBER() OVER (ORDER BY rank) AS new_rank
+    FROM 
+        games_staging
+)
+
+-- Step 3: Update the table with the new ranks
+UPDATE games_staging
+SET rank = ranking.new_rank
+FROM ranking
+WHERE games_staging.temp_id = ranking.temp_id;
+
+-- Step 4: Remove the temporary unique identifier column
+ALTER TABLE games_staging DROP COLUMN temp_id;
+
+-- Commit the transaction
+COMMIT;
+
+-- !!! Still doesn’t work, let’s try another method !!!
+-- I am going to create another table with sorted ranks and drop the old table with no sorted ranks
+ALTER TABLE games_staging ADD COLUMN temp_id SERIAL;
+
+CREATE TABLE games_staging_temp AS
+WITH ranking AS (
+    SELECT 
+        temp_id,
+        ROW_NUMBER() OVER (ORDER BY rank) AS new_rank,
+        rank,
+        name,
+        platform,
+        year,
+        genre,
+        publisher,
+        na_sales,
+        eu_sales,
+        jp_sales,
+        other_sales,
+        global_sales
+    FROM 
+        games_staging
+)
+SELECT 
+    new_rank AS rank,
+    name,
+    platform,
+    year,
+    genre,
+    publisher,
+    na_sales,
+    eu_sales,
+    jp_sales,
+    other_sales,
+    global_sales
+FROM 
+    ranking;
+
+SELECT *
+FROM games_staging_temp;
+
+/* So I fixed the issue and it’s time to delete the old table and
+rename this new table to the same name as the old table */
+
+DROP TABLE games_staging;
+
+ALTER TABLE games_staging_temp RENAME TO games_staging;
+
+-- Let's run the new table
+SELECT *
+FROM games_staging;
